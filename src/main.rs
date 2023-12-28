@@ -1,7 +1,10 @@
 use std::env;
 use std::fs;
+use std::fs::File;
 use std::str;
+use std::io::{BufRead, BufReader};
 
+#[derive(Debug)]
 struct Instruction {
     opcode: Opcode,
     direction: Direction,
@@ -15,9 +18,9 @@ impl Instruction {
     fn from_u16(instruction: u16) -> Instruction {
         // 543210 9 8 76  543 210
         // OPCODE D W MOD R1  R2
-        let opcode = binary_to_opcode((instruction >> 8) as u8);
+        let opcode = Opcode::from_binary((instruction >> 8) as u8);
         let direction = Direction::from_u16((instruction >> 9) & 1);
-        let wide = (instruction >> 10) & 1 != 0;
+        let wide = (instruction >> 8) & 1 != 0;
         let mode = Mode::from_u16((instruction >> 6) & 0b11);
         let register1 = ((instruction >> 3) & 0b111) as u8;
         let register2 = (instruction & 0b111) as u8;
@@ -31,33 +34,78 @@ impl Instruction {
             register2
         }
     }
+
+    //fn from_string(&str) -> Instruction {
+        // mov cx, bx
+        // first word is opcode
+        // second word -, is reg1
+        // third word is reg2
+        // D?
+        // W?
+        // MOD?
+    //}
+
+    fn to_string(&self) -> String {
+        let reg1 = if self.direction == Direction::ToReg1 {
+            register_to_string(self.register1, self.wide)
+        } else {
+            register_to_string(self.register2, self.wide)
+        };
+
+        let reg2 = if self.direction == Direction::ToReg1 {
+            register_to_string(self.register2, self.wide)
+        } else { 
+            register_to_string(self.register1, self.wide)
+        };
+
+        format!("{} {}, {}", self.opcode.to_string(), reg1, reg2)
+    }
 }
 
+#[derive(Debug)]
 enum Opcode {
     MOV
 }
 
-enum Direction {
-    ToRegister,
-    FromRegister
+impl Opcode {
+    fn from_string(name: &str) -> Opcode {
+        match name {
+            "mov" => Opcode::MOV,
+            _ => panic!("Unknown Opcode: {}", name)
+        }
+    }
+
+    fn from_binary(binary: u8) -> Opcode {
+        match binary >> 2 { // Bit shift to remove the D and W bits
+            0b100010 => Opcode::MOV,
+            _ => panic!("Unknown Opcode: {}", binary >> 2)
+        }
+    }
+
+    fn to_string(&self) -> &str {
+        match self {
+            Opcode::MOV => "mov",
+        }
+    }
 }
 
-enum Action {
-    Assemble,
-    Disassemble,
-    Binarify
+#[derive(PartialEq, Debug)]
+enum Direction {
+    ToReg1,
+    FromReg1
 }
 
 impl Direction {
     fn from_u16(value: u16) -> Direction {
         match value {
-            0 => Direction::ToRegister,
-            1 => Direction::FromRegister,
+            0 => Direction::ToReg1,
+            1 => Direction::FromReg1,
             _ => panic!("Unknown value: {}", value)
         }
     }
 }
 
+#[derive(Debug)]
 enum Mode {
     Memory,
     Register
@@ -80,39 +128,65 @@ fn main() {
         panic!("Invalid amount of arguments");
     }
 
-
     let filename = args[2].as_str();
 
     let path_t = env::current_dir().unwrap();
     let path = format!("{}/{}", path_t.to_str().unwrap(), filename);
 
     match args[1].as_str() {
-        "ass" => {},
+        "ass" => {
+            // read assembly file
+            let reader = BufReader::new(File::open(filename).expect("Unable to open file"));
+            // parse each line as an instruction
+            for line in reader.lines() {
+                //Instruction::from_string();
+            }
+        },
         "dis" => {
-            read_file(path.as_str());
+            let bytes = fs::read(path).expect("Unable to read file");
+            let instructions = bytes_to_instructions(bytes.as_slice());
+            for instruction in instructions {
+                println!("{}", instruction.to_string());
+            }
         },
         "binarify" => {
             let file = fs::read_to_string(path.clone());
-            let binary = string_to_binary(file.unwrap());
+            let binary = utf8_to_bytes(file.unwrap());
             fs::write(path, binary).expect("Unable to write to file");
         },
         _ => panic!("{} is not a valid argument", args[0])
     };
-
 }
 
-fn read_file(path: &str) {
+fn print_file_binary(path: &str) {
     let contents = fs::read(path).expect("Unable to read file");
     for c in contents {
         println!("{:b}", c);
     }
 }
 
-fn binary_to_instructions(binary: Vec<u8>) -> Vec<Instruction> {
+fn bytes_to_instructions(binary: &[u8]) -> Vec<Instruction> {
+    let mut instructions = Vec::new();
+    let mut i = 0;
+    while i < binary.len() / 2 {
+        let instruction = Instruction::from_u16(((binary[i * 2] as u16) << 8) + binary[i * 2 + 1] as u16);
+        instructions.push(instruction);
 
+        i += 1;
+    }
+
+    instructions
 }
 
-fn string_to_binary(string: String) -> Vec<u8> {
+fn hex_to_string(hex: Vec<u8>) -> String {
+    let mut string = "".to_string();
+    for c in hex {
+        string.push(c as char);
+    }
+    string.to_string()
+}
+
+fn utf8_to_bytes(string: String) -> Vec<u8> {
     let mut new_byte: Vec<bool> = Vec::new();
     let mut new_contents: Vec<u8> = Vec::new();
 
@@ -152,9 +226,56 @@ fn binary_to_string(binary: Vec<u8>) -> String {
     }
 }
 
-fn binary_to_opcode(binary: u8) -> Opcode {
-    match binary >> 2 { // Bit shift to remove the D and W bits
-        0b100010 => Opcode::MOV,
-        _ => panic!("Unknown Opcode: {}", binary >> 2)
+fn register_to_string(register: u8, wide: bool) -> String {
+    match register {
+        0b000 => {
+            match wide {
+                true => "ax".to_string(),
+                false => "al".to_string()
+            }
+        },
+        0b001 => {
+            match wide {
+                true => "cx".to_string(),
+                false => "cl".to_string()
+            }
+        },
+        0b010 => {
+            match wide {
+                true => "dx".to_string(),
+                false => "dl".to_string()
+            }
+        },
+        0b011 => {
+            match wide {
+                true => "bx".to_string(),
+                false => "bl".to_string()
+            }
+        },
+        0b100 => {
+            match wide {
+                true => "sp".to_string(),
+                false => "ah".to_string()
+            }
+        },
+        0b101 => {
+            match wide {
+                true => "bp".to_string(),
+                false => "ch".to_string()
+            }
+        },
+        0b110 => {
+            match wide {
+                true => "si".to_string(),
+                false => "dh".to_string()
+            }
+        },
+        0b111 => {
+            match wide {
+                true => "di".to_string(),
+                false => "bh".to_string()
+            }
+        },
+        _ => panic!("Invalid register: {}", register)
     }
 }
